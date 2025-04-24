@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Plano Interactivo de Bodega</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: #f4f4f4;
+      min-height: 100vh;
+    }
+
+    h1 {
+      text-align: center;
+      background: #007bff;
+      color: white;
+      padding: 15px;
+      margin: 0 0 20px;
+      border-radius: 5px;
+    }
+
+    .bodegas-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 30px;
+      justify-content: center;
+      padding: 20px;
+      position: relative;
+      min-height: 600px;
+    }
+
+    .bodega {
+      background: white;
+      border: 2px solid #ccc;
+      padding: 15px;
+      width: 400px;
+      min-height: 500px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      position: absolute;
+      resize: both;
+      overflow: auto;
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .bodega h2 {
+      text-align: center;
+      background: #007bff;
+      color: white;
+      padding: 10px;
+      margin: 0 0 15px;
+      border-radius: 5px;
+      cursor: move;
+    }
+
+    .estantes {
+      position: relative;
+      flex-grow: 1;
+      min-height: 400px;
+      padding: 10px;
+    }
+
+    .estante {
+      width: 140px;
+      min-width: 100px;
+      min-height: 240px; /* Increased to accommodate color picker */
+      border: 1px solid #999;
+      text-align: center;
+      padding: 10px;
+      border-radius: 5px;
+      position: absolute;
+      cursor: move;
+      user-select: none;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+      resize: both;
+      overflow: auto;
+    }
+
+    .estante input,
+    .estante input[type="date"],
+    .estante input[type="number"],
+    .estante input[type="url"],
+    .estante input[type="color"] {
+      width: 100%;
+      margin: 5px 0;
+      font-size: 0.8em;
+      padding: 4px;
+      text-align: center;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      box-sizing: border-box;
+    }
+
+    .estante input[type="color"] {
+      height: 30px;
+      padding: 2px;
+      cursor: pointer;
+    }
+
+    .estante-id, .estante-coords {
+      font-size: 0.8em;
+      color: #555;
+      margin: 5px 0;
+      display: none;
+    }
+
+    .estante-id.visible, .estante-coords.visible {
+      display: block;
+    }
+
+    .qr-code {
+      margin: 10px auto;
+      text-align: center;
+    }
+
+    .estante-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 10px;
+      justify-content: center;
+    }
+
+    .btn-action {
+      font-size: 0.7em;
+      padding: 5px 8px;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      color: white;
+    }
+
+    .btn-toggle-id { background: #6c757d; }
+    .btn-edit { background: #ffc107; }
+    .btn-delete { background: #dc3545; }
+    .btn-delete-bodega { background: #dc3545; margin-top: 10px; }
+
+    #addBodegaBtn, #backupBtn, #downloadPdfBtn, #downloadExcelBtn {
+      display: inline-block;
+      margin: 20px 10px;
+      padding: 12px 24px;
+      background: #28a745;
+      color: white;
+      font-size: 16px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+
+    .btn-add-estante {
+      background: #28a745;
+      color: white;
+      border: none;
+      padding: 8px 12px;
+      margin: 15px auto 0;
+      display: block;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 0.9em;
+    }
+  </style>
+</head>
+<body>
+  <h1>Plano Interactivo de Bodega</h1>
+  <button id="addBodegaBtn">Agregar Bodega</button>
+  <button id="backupBtn">Descargar Backup</button>
+  <button id="downloadPdfBtn">Descargar PDF</button>
+  <button id="downloadExcelBtn">Descargar Excel</button>
+  <div class="bodegas-container" id="bodegasContainer"></div>
+
+  <script>
+    let dragged = null;
+    let draggedBodega = null;
+    let offsetX = 0;
+    let offsetY = 0;
+    let saveTimeout;
+    const { jsPDF } = window.jspdf;
+
+    function generateCoordinateId(x, y) {
+      const col = String.fromCharCode(65 + Math.floor(x / 150));
+      const row = Math.floor(y / 150) + 1;
+      return `${col}${row}`;
+    }
+
+    function updateQRCode(estante) {
+      const id = estante.id;
+      const nombre = estante.querySelector('input[type="text"]').value || 'Sin nombre';
+      const fecha = estante.querySelector('input[type="date"]').value || 'Sin fecha';
+      const peso = estante.querySelector('input[type="number"]').value || 'Sin peso';
+      const ficha = estante.querySelector('input[type="url"]').value || 'Sin ficha';
+      const color = estante.querySelector('input[type="color"]').value || '#e9ecef';
+      const x = parseFloat(estante.style.left) || 0;
+      const y = parseFloat(estante.style.top) || 0;
+      const qrData = `ID: ${id}, Nombre: ${nombre}, Fecha: ${fecha}, Peso: ${peso}kg, Ficha: ${ficha}, Color: ${color}, Coords: (${x}, ${y})`;
+
+      const qrDiv = estante.querySelector('.qr-code');
+      qrDiv.innerHTML = '';
+      new QRCode(qrDiv, {
+        text: qrData,
+        width: 100,
+        height: 100
+      });
+    }
+
+    function updateCoordinates(estante) {
+      const x = parseFloat(estante.style.left) || 0;
+      const y = parseFloat(estante.style.top) || 0;
+      const coordsDiv = estante.querySelector('.estante-coords');
+      coordsDiv.textContent = `Coords: (${x.toFixed(0)}, ${y.toFixed(0)})`;
+    }
+
+    function adjustBodegaSize(bodega) {
+      const estantesDiv = bodega.querySelector('.estantes');
+      const estantes = estantesDiv.querySelectorAll('.estante');
+      let maxWidth = 400;
+      let maxHeight = 400;
+
+      estantes.forEach(est => {
+        const x = parseFloat(est.style.left) || 0;
+        const y = parseFloat(est.style.top) || 0;
+        const width = est.offsetWidth;
+        const height = est.offsetHeight;
+
+        maxWidth = Math.max(maxWidth, x + width + 30);
+        maxHeight = Math.max(maxHeight, y + height + 30);
+
+        est.style.left = `${Math.min(x, maxWidth - width - 30)}px`;
+        est.style.top = `${Math.min(y, maxHeight - height - 30)}px`;
+      });
+
+      bodega.style.width = `${maxWidth}px`;
+      estantesDiv.style.height = `${maxHeight}px`;
+    }
+
+    function createEstante(id = null, nombre = "", fecha = "", peso = "", ficha = "", showId = false, x = 10, y = 10, color = "#e9ecef") {
+      const estante = document.createElement("div");
+      estante.className = "estante";
+      estante.id = id || generateCoordinateId(x, y);
+      estante.style.left = `${x}px`;
+      estante.style.top = `${y}px`;
+      estante.style.backgroundColor = color;
+
+      estante.innerHTML = `
+        <div class="estante-id ${showId ? 'visible' : ''}">${estante.id}</div>
+        <div class="estante-coords visible">Coords: (${x}, ${y})</div>
+        <input type="text" placeholder="Nombre" value="${nombre}" oninput="updateEstante(this)">
+        <input type="date" value="${fecha}" onchange="updateEstante(this)">
+        <input type="number" placeholder="Peso (kg)" value="${peso}" min="0" step="0.1" oninput="updateEstante(this)">
+        <input type="url" placeholder="Ficha técnica" value="${ficha}" oninput="updateEstante(this)">
+        <input type="color" value="${color}" onchange="updateEstante(this)">
+        <div class="qr-code"></div>
+        <div class="estante-actions">
+          <button class="btn-action btn-toggle-id" onclick="toggleId(this)">${showId ? 'Ocultar' : 'Mostrar'} ID</button>
+          <button class="btn-action btn-edit" onclick="editEstante(this)">Editar</button>
+          <button class="btn-action btn-delete" onclick="deleteEstante(this)">Eliminar</button>
+        </div>
+      `;
+
+      updateQRCode(estante);
+      updateCoordinates(estante);
+
+      estante.addEventListener("mousedown", (e) => {
+        if (e.target.classList.contains('btn-action') || e.target.tagName === 'INPUT') return;
+        dragged = estante;
+        const rect = estante.getBoundingClientRect();
+        offsetX = e.clientX - rect.left;
+        offsetY = e.clientY - rect.top;
+        estante.style.zIndex = 1000;
+      });
+
+      estante.addEventListener("resize", () => {
+        updateQRCode(estante);
+        const bodega = estante.closest('.bodega');
+        adjustBodegaSize(bodega);
+        saveState();
+      });
+
+      const bodega = estante.closest('.bodega');
+      if (bodega) {
+        adjustBodegaSize(bodega);
+      }
+
+      return estante;
+    }
+
+    function updateEstante(input) {
+      const estante = input.closest('.estante');
+      const pesoInput = estante.querySelector('input[type="number"]');
+      const colorInput = estante.querySelector('input[type="color"]');
+      if (pesoInput.value && pesoInput.value < 0) {
+        pesoInput.value = '';
+        alert('El peso no puede ser negativo.');
+      }
+      estante.style.backgroundColor = colorInput.value;
+      updateQRCode(estante);
+      updateCoordinates(estante);
+      const bodega = estante.closest('.bodega');
+      adjustBodegaSize(bodega);
+      saveState();
+    }
+
+    function createBodega(name = "Nueva Bodega", estantes = [], x = 0, y = 0) {
+      const bodega = document.createElement("div");
+      bodega.className = "bodega";
+      bodega.style.left = `${x}px`;
+      bodega.style.top = `${y}px`;
+
+      const title = document.createElement("h2");
+      title.textContent = name;
+      title.contentEditable = true;
+      title.addEventListener("input", saveState);
+      bodega.appendChild(title);
+
+      const estantesDiv = document.createElement("div");
+      estantesDiv.className = "estantes";
+      bodega.appendChild(estantesDiv);
+
+      const addEstanteBtn = document.createElement("button");
+      addEstanteBtn.className = "btn-add-estante";
+      addEstanteBtn.textContent = "+ Estante";
+      addEstanteBtn.onclick = () => {
+        const existingEstantes = estantesDiv.querySelectorAll('.estante');
+        let newX = 10;
+        let newY = 10;
+        if (existingEstantes.length > 0) {
+          const lastEstante = existingEstantes[existingEstantes.length - 1];
+          newX = (parseFloat(lastEstante.style.left) || 0) + 150;
+          newY = parseFloat(lastEstante.style.top) || 0;
+        }
+        estantesDiv.appendChild(createEstante(null, "", "", "", "", false, newX, newY, "#e9ecef"));
+        adjustBodegaSize(bodega);
+        saveState();
+      };
+      bodega.appendChild(addEstanteBtn);
+
+      const deleteBodegaBtn = document.createElement("button");
+      deleteBodegaBtn.className = "btn-action btn-delete-bodega";
+      deleteBodegaBtn.textContent = "Eliminar Bodega";
+      deleteBodegaBtn.onclick = () => {
+        if (confirm("¿Eliminar esta bodega y todo su contenido?")) {
+          bodega.remove();
+          saveState();
+        }
+      };
+      bodega.appendChild(deleteBodegaBtn);
+
+      estantes.forEach(est => {
+        estantesDiv.appendChild(createEstante(est.id, est.nombre, est.fecha, est.peso, est.ficha, est.showId, est.x, est.y, est.color));
+      });
+
+      document.getElementById("bodegasContainer").appendChild(bodega);
+      adjustBodegaSize(bodega);
+
+      title.addEventListener("mousedown", (e) => {
+        draggedBodega = bodega;
+        const rect = bodega.getBoundingClientRect();
+        offsetX = e.clientX - rect.left;
+        offsetY = e.clientY - rect.top;
+        bodega.style.zIndex = 1000;
+      });
+
+      saveState();
+    }
+
+    function toggleId(button) {
+      const estante = button.closest('.estante');
+      const idDiv = estante.querySelector('.estante-id');
+      idDiv.classList.toggle('visible');
+      button.textContent = idDiv.classList.contains('visible') ? 'Ocultar ID' : 'Mostrar ID';
+      saveState();
+    }
+
+    function editEstante(button) {
+      const estante = button.closest('.estante');
+      const nombreInput = estante.querySelector('input[type="text"]');
+      nombreInput.focus();
+      saveState();
+    }
+
+    function deleteEstante(button) {
+      if (confirm("¿Eliminar este estante?")) {
+        const estante = button.closest('.estante');
+        const bodega = estante.closest('.bodega');
+        estante.remove();
+        adjustBodegaSize(bodega);
+        saveState();
+      }
+    }
+
+    document.addEventListener("mousemove", (e) => {
+      if (dragged) {
+        const estantesDiv = dragged.parentNode;
+        const rect = estantesDiv.getBoundingClientRect();
+        let newX = e.clientX - rect.left - offsetX;
+        let newY = e.clientY - rect.top - offsetY;
+
+        newX = Math.max(0, Math.min(newX, rect.width - dragged.offsetWidth - 10));
+        newY = Math.max(0, Math.min(newY, rect.height - dragged.offsetHeight - 10));
+
+        dragged.style.left = `${newX}px`;
+        dragged.style.top = `${newY}px`;
+
+        dragged.id = generateCoordinateId(newX, newY);
+        dragged.querySelector('.estante-id').textContent = dragged.id;
+        updateQRCode(dragged);
+        updateCoordinates(dragged);
+
+        const bodega = dragged.closest('.bodega');
+        adjustBodegaSize(bodega);
+      } else if (draggedBodega) {
+        const container = document.getElementById("bodegasContainer");
+        const rect = container.getBoundingClientRect();
+        let newX = e.clientX - rect.left - offsetX;
+        let newY = e.clientY - rect.top - offsetY;
+
+        newX = Math.max(0, Math.min(newX, rect.width - draggedBodega.offsetWidth - 10));
+        newY = Math.max(0, Math.min(newY, rect.height - draggedBodega.offsetHeight - 10));
+
+        draggedBodega.style.left = `${newX}px`;
+        draggedBodega.style.top = `${newY}px`;
+      }
+    });
+
+    document.addEventListener("mouseup", () => {
+      if (dragged) {
+        dragged.style.zIndex = '';
+        const bodega = dragged.closest('.bodega');
+        adjustBodegaSize(bodega);
+        dragged = null;
+        saveState();
+      }
+      if (draggedBodega) {
+        draggedBodega.style.zIndex = '';
+        draggedBodega = null;
+        saveState();
+      }
+    });
+
+    document.addEventListener("touchstart", (e) => {
+      if (e.target.classList.contains('btn-action') || e.target.tagName === 'INPUT') return;
+      const estante = e.target.closest('.estante');
+      const bodegaTitle = e.target.closest('h2');
+      if (estante) {
+        dragged = estante;
+        const rect = estante.getBoundingClientRect();
+        const touch = e.touches[0];
+        offsetX = touch.clientX - rect.left;
+        offsetY = touch.clientY - rect.top;
+        estante.style.zIndex = 1000;
+        e.preventDefault();
+      } else if (bodegaTitle) {
+        draggedBodega = bodegaTitle.closest('.bodega');
+        const rect = draggedBodega.getBoundingClientRect();
+        const touch = e.touches[0];
+        offsetX = touch.clientX - rect.left;
+        offsetY = touch.clientY - rect.top;
+        draggedBodega.style.zIndex = 1000;
+        e.preventDefault();
+      }
+    });
+
+    document.addEventListener("touchmove", (e) => {
+      if (dragged) {
+        const estantesDiv = dragged.parentNode;
+        const rect = estantesDiv.getBoundingClientRect();
+        const touch = e.touches[0];
+        let newX = touch.clientX - rect.left - offsetX;
+        let newY = touch.clientY - rect.top - offsetY;
+
+        newX = Math.max(0, Math.min(newX, rect.width - dragged.offsetWidth - 10));
+        newY = Math.max(0, Math.min(newY, rect.height - dragged.offsetHeight - 10));
+
+        dragged.style.left = `${newX}px`;
+        dragged.style.top = `${newY}px`;
+
+        dragged.id = generateCoordinateId(newX, newY);
+        dragged.querySelector('.estante-id').textContent = dragged.id;
+        updateQRCode(dragged);
+        updateCoordinates(dragged);
+
+        const bodega = dragged.closest('.bodega');
+        adjustBodegaSize(bodega);
+        e.preventDefault();
+      } else if (draggedBodega) {
+        const container = document.getElementById("bodegasContainer");
+        const rect = container.getBoundingClientRect();
+        const touch = e.touches[0];
+        let newX = touch.clientX - rect.left - offsetX;
+        let newY = touch.clientY - rect.top - offsetY;
+
+        newX = Math.max(0, Math.min(newX, rect.width - draggedBodega.offsetWidth - 10));
+        newY = Math.max(0, Math.min(newY, rect.height - draggedBodega.offsetHeight - 10));
+
+        draggedBodega.style.left = `${newX}px`;
+        draggedBodega.style.top = `${newY}px`;
+        e.preventDefault();
+      }
+    });
+
+    document.addEventListener("touchend", () => {
+      if (dragged) {
+        dragged.style.zIndex = '';
+        const bodega = dragged.closest('.bodega');
+        adjustBodegaSize(bodega);
+        dragged = null;
+        saveState();
+      }
+      if (draggedBodega) {
+        draggedBodega.style.zIndex = '';
+        draggedBodega = null;
+        saveState();
+      }
+    });
+
+    document.getElementById("addBodegaBtn").addEventListener("click", () => {
+      const container = document.getElementById("bodegasContainer");
+      const existingBodegas = container.querySelectorAll('.bodega');
+      let newX = 0;
+      let newY = 0;
+      if (existingBodegas.length > 0) {
+        const lastBodega = existingBodegas[existingBodegas.length - 1];
+        newX = (parseFloat(lastBodega.style.left) || 0) + 430;
+        newY = parseFloat(lastBodega.style.top) || 0;
+      }
+      createBodega("Nueva Bodega", [], newX, newY);
+    });
+
+    document.getElementById("backupBtn").addEventListener("click", () => {
+      const data = localStorage.getItem("bodegaData");
+      const blob = new Blob([data], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `bodega_backup_${new Date().toISOString()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    document.getElementById("downloadPdfBtn").addEventListener("click", () => {
+      const container = document.getElementById("bodegasContainer");
+      html2canvas(container, { scale: 2 }).then(canvas => {
+        const imgData = canvas.toDataURL('image/png');
+        const pdf = new jsPDF('p', 'mm', 'a4');
+        const pageWidth = 190;
+        const pageHeight = 277;
+        let imgHeight = (canvas.height * pageWidth) / canvas.width;
+        let heightLeft = imgHeight;
+        let position = 10;
+
+        pdf.addImage(imgData, 'PNG', 10, position, pageWidth, imgHeight);
+        heightLeft -= pageHeight;
+
+        while (heightLeft > 0) {
+          position = heightLeft - imgHeight + 10;
+          pdf.addPage();
+          pdf.addImage(imgData, 'PNG', 10, position, pageWidth, imgHeight);
+          heightLeft -= pageHeight;
+        }
+
+        pdf.save(`bodegas_${new Date().toISOString()}.pdf`);
+      });
+    });
+
+    document.getElementById("downloadExcelBtn").addEventListener("click", () => {
+      const data = [];
+      document.querySelectorAll(".bodega").forEach(bodega => {
+        const title = bodega.querySelector("h2").textContent;
+        const estantes = bodega.querySelectorAll(".estante");
+        estantes.forEach(est => {
+          data.push({
+            Bodega: title,
+            Estante_ID: est.id,
+            Nombre: est.querySelector('input[type="text"]').value || 'Sin nombre',
+            Fecha: est.querySelector('input[type="date"]').value || 'Sin fecha',
+            Peso_kg: est.querySelector('input[type="number"]').value || 'Sin peso',
+            Ficha_Tecnica: est.querySelector('input[type="url"]').value || 'Sin ficha',
+            Color: est.querySelector('input[type="color"]').value || '#e9ecef',
+            X: parseFloat(est.style.left) || 0,
+            Y: parseFloat(est.style.top) || 0
+          });
+        });
+      });
+
+      const ws = XLSX.utils.json_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Bodegas");
+      XLSX.write(wb, `bodegas_${new Date().toISOString()}.xlsx`);
+    });
+
+    function saveState() {
+      clearTimeout(saveTimeout);
+      saveTimeout = setTimeout(() => {
+        try {
+          const bodegas = [];
+          document.querySelectorAll(".bodega").forEach(bodega => {
+            const title = bodega.querySelector("h2").textContent;
+            const x = parseFloat(bodega.style.left) || 0;
+            const y = parseFloat(bodega.style.top) || 0;
+            const estantes = Array.from(bodega.querySelectorAll(".estante")).map(est => {
+              return {
+                id: est.id,
+                nombre: est.querySelector('input[type="text"]').value,
+                fecha: est.querySelector('input[type="date"]').value,
+                peso: est.querySelector('input[type="number"]').value,
+                ficha: est.querySelector('input[type="url"]').value,
+                color: est.querySelector('input[type="color"]').value,
+                showId: est.querySelector('.estante-id').classList.contains('visible'),
+                x: parseFloat(est.style.left) || 10,
+                y: parseFloat(est.style.top) || 10
+              };
+            });
+            bodegas.push({ title, estantes, x, y });
+          });
+          localStorage.setItem("bodegaData", JSON.stringify(bodegas));
+        } catch (e) {
+          alert("Error saving data to localStorage. It may be full or disabled.");
+          console.error(e);
+        }
+      }, 500);
+    }
+
+    function loadState() {
+      try {
+        const data = JSON.parse(localStorage.getItem("bodegaData")) || [];
+        data.forEach(b => createBodega(b.title, b.estantes, b.x, b.y));
+      } catch (e) {
+        alert("Error loading data from localStorage.");
+        console.error(e);
+      }
+    }
+
+    window.onload = loadState;
+  </script>
+</body>
+</html>
